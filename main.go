@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 )
 
 func main() {
@@ -39,19 +40,33 @@ func main() {
 
 	defer file.Close()
 
+	mutex := sync.Mutex{}
+	wg := sync.WaitGroup{}
+	wg.Add(len(tables))
 	// getting the list of all columns for each table
 	for _, t := range tables {
-		columns, err := db.GetTableColumns(t)
-		if err != nil {
-			logger.Fatal(fmt.Sprintf("can't get the list of all columns for %s table", t), err)
-		}
 
-		// creating SQL scripts for each table
-		b := db.CreateSqlScript(t, columns)
+		go func(t string) {
+			defer wg.Done()
 
-		// saving sql script to the file
-		if _, err := file.Write(b); err != nil {
-			logger.Fatal("can't write sql to the file", err)
-		}
+			columns, err := db.GetTableColumns(t)
+			if err != nil {
+				logger.Fatal(fmt.Sprintf("can't get the list of all columns for %s table", t), err)
+			}
+
+			// creating SQL scripts for each table
+			b := db.CreateSqlScript(t, columns)
+
+			mutex.Lock()
+
+			// saving sql script to the file
+			if _, err := file.Write(b); err != nil {
+				logger.Fatal("can't write sql to the file", err)
+			}
+
+			mutex.Unlock()
+		}(t)
 	}
+
+	wg.Wait()
 }
