@@ -11,32 +11,32 @@ import (
 
 const paramPrefix = "_"
 
-type DB struct {
+type MySqlDB struct {
 	db *sql.DB
 }
 
-// NewDB is opening connection to MySQL db
-func NewDB(conString string) (*DB, error) {
+// NewMySql is opening connection to MySQL db
+func NewMySql(conString string) (*MySqlDB, error) {
 
 	db, err := sql.Open("mysql", conString)
 	if err != nil {
 		return nil, err
 	}
 
-	return &DB{db: db}, nil
+	return &MySqlDB{db: db}, nil
 }
 
 // Close is closing connection to a MySQL db
-func (d DB) Close() {
+func (d MySqlDB) Close() {
 	if d.db != nil {
 		d.db.Close()
 	}
 }
 
-// GetAllTables us getting the list of all tables in the DB
-func (d DB) GetAllTables() ([]string, error) {
+// GetAllTables us getting the list of all tables in the MySqlDB
+func (d MySqlDB) GetAllTables() ([]string, error) {
 	if d.db == nil {
-		return nil, errors.New("DB is not initialized")
+		return nil, errors.New("MySqlDB is not initialized")
 	}
 
 	// getting all tables
@@ -61,9 +61,9 @@ func (d DB) GetAllTables() ([]string, error) {
 }
 
 // GetTableColumns is getting the list of all columns with data types for the specific table
-func (d DB) GetTableColumns(table string) ([]*DbColumn, error) {
+func (d MySqlDB) GetTableColumns(table string) ([]*DbColumn, error) {
 	if d.db == nil {
-		return nil, errors.New("DB is not initialized")
+		return nil, errors.New("MySqlDB is not initialized")
 	}
 
 	// getting the columns details from the table
@@ -78,8 +78,9 @@ func (d DB) GetTableColumns(table string) ([]*DbColumn, error) {
 
 	for rows.Next() {
 		var column, dataType, null, pk, auto string
+		var defaultValue *string
 
-		if err := rows.Scan(&column, &null, &dataType, &pk, "", &auto); err != nil {
+		if err := rows.Scan(&column, &dataType, &null, &pk, &defaultValue, &auto); err != nil {
 			return nil, err
 		}
 
@@ -106,16 +107,21 @@ func (d DB) GetTableColumns(table string) ([]*DbColumn, error) {
 }
 
 // CreateSqlScript is creating SQL script for Insert, Update and Delete
-func (DB) CreateSqlScript(table string, columns []*DbColumn) ([]byte, error) {
+func (d MySqlDB) CreateSqlScript(table string, columns []*DbColumn) []byte {
+
 	buf := bytes.Buffer{}
 
 	buf.WriteString(fmt.Sprintf("##### TABLE: %s\n", table))
 
-	// creating sql script for insert
+	// creating sql scripts
+	d.createSqlClause(table, columns, StoredProcedureTypeInsert, &buf)
+	d.createSqlClause(table, columns, StoredProcedureTypeUpdate, &buf)
+	d.createSqlClause(table, columns, StoredProcedureTypeDelete, &buf)
 
+	return buf.Bytes()
 }
 
-func (d DB) createSqlClause(table string, columns []*DbColumn, spType StoredProcedureTypes, buf *bytes.Buffer) {
+func (d MySqlDB) createSqlClause(table string, columns []*DbColumn, spType StoredProcedureTypes, buf *bytes.Buffer) {
 
 	buf.WriteString(fmt.Sprintf("##### %s\n", strings.ToUpper(string(spType))))
 
@@ -123,26 +129,34 @@ func (d DB) createSqlClause(table string, columns []*DbColumn, spType StoredProc
 	switch spType {
 	case StoredProcedureTypeInsert:
 		// getting the list of columns
-		cols := make([]string, len(columns))
-		vals := make([]string, len(columns))
+		cols := []string{}
+		vals := []string{}
 
-		for i, c := range columns {
-			cols[i] = c.Name
-			vals[i] = d.getColumnName(c.Name)
+		for _, c := range columns {
+			// inserting non-autoincrement columns only
+			if !c.IsAutoincrement {
+				cols = append(cols, c.Name)
+				vals = append(vals, d.getColumnName(c.Name))
+			}
 		}
 
 		clause = fmt.Sprintf(`
 INSERT INTO %s (%s) 
-VALUES(%s)`, table, strings.Join(cols, ","), strings.Join(vals, ","))
+VALUES(%s)`, table, strings.Join(cols, ", "), strings.Join(vals, ", "))
 
 	case StoredProcedureTypeUpdate:
 
 		// getting the list of columns
-		cols := make([]string, len(columns))
+		cols := []string{}
 		pk := []string{}
 
-		for i, c := range columns {
-			cols[i] = fmt.Sprintf("%s = %s", c.Name, d.getColumnName(c.Name))
+		for _, c := range columns {
+			// updating non-autoincrement columns only
+			if !c.IsAutoincrement {
+				cols = append(cols, fmt.Sprintf("%s = %s", c.Name, d.getColumnName(c.Name)))
+			}
+
+			// getting primary keys
 			if c.IsPrimary {
 				pk = append(pk, fmt.Sprintf("%s = %s", c.Name, d.getColumnName(c.Name)))
 			}
@@ -155,11 +169,11 @@ VALUES(%s)`, table, strings.Join(cols, ","), strings.Join(vals, ","))
 
 		clause = fmt.Sprintf(`
 UPDATE 
-    %s 
+%s 
 SET 
-    %s 
+%s 
 WHERE 
-    %s`, table, strings.Join(cols, ","), strings.Join(cols, ","), strings.Join(pk, " AND "))
+%s`, table, strings.Join(cols, ",\n"), strings.Join(pk, "\nAND "))
 
 	case StoredProcedureTypeDelete:
 		// getting the list of columns
@@ -178,30 +192,36 @@ WHERE
 
 		clause = fmt.Sprintf(`
 DELETE FROM 
-    %s 
+%s 
 WHERE 
-    %s`, table, strings.Join(pk, " AND "))
-
+%s`, table, strings.Join(pk, "\nAND "))
 	}
 
-	buf.WriteString(d.createStoredProcedure(StoredProcedureTypeInsert, table, columns, clause))
+	// adding new line symbol
+	clause += "\n"
+
+	buf.WriteString(d.createStoredProcedure(spType, table, columns, clause))
 }
 
 // createStoredProcedure is creating a stored procedure body
-func (db DB) createStoredProcedure(spType StoredProcedureTypes, table string, columns []*DbColumn, clause string) string {
+func (db MySqlDB) createStoredProcedure(spType StoredProcedureTypes, table string, columns []*DbColumn, clause string) string {
 
 	// prearing list of parameters
 	params := make([]string, len(columns))
 	for i, c := range columns {
-		params[i] = fmt.Sprintf("IN %s %s", c.Name, c.Type)
+		params[i] = fmt.Sprintf("IN %s %s", db.getColumnName(c.Name), c.Type)
 
 		i++
 	}
 
-	return fmt.Sprintf(`CREATE PROCEDURE usp_%s_%s (%s) \n BEGIN\n %s\n END`, table, spType, strings.Join(params, ","), clause)
+	return fmt.Sprintf(`
+CREATE PROCEDURE usp_%s_%s (%s) 
+BEGIN
+%s
+END`+"\n", table, spType, strings.Join(params, ", "), clause)
 }
 
-func (db DB) getColumnName(column string) string {
+func (db MySqlDB) getColumnName(column string) string {
 	return fmt.Sprintf("%s%s", paramPrefix, column)
 }
 
