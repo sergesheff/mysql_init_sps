@@ -111,7 +111,7 @@ func (d MySqlDB) CreateSqlScript(table string, columns []*DbColumn) []byte {
 
 	buf := bytes.Buffer{}
 
-	buf.WriteString(fmt.Sprintf("##### TABLE: %s\n", table))
+	buf.WriteString(fmt.Sprintf("----- TABLE: %s\n", table))
 
 	// creating sql scripts
 	d.createSqlClause(table, columns, StoredProcedureTypeInsert, &buf)
@@ -123,7 +123,7 @@ func (d MySqlDB) CreateSqlScript(table string, columns []*DbColumn) []byte {
 
 func (d MySqlDB) createSqlClause(table string, columns []*DbColumn, spType StoredProcedureTypes, buf *bytes.Buffer) {
 
-	buf.WriteString(fmt.Sprintf("##### %s\n", strings.ToUpper(string(spType))))
+	buf.WriteString(fmt.Sprintf("----- %s\n", strings.ToUpper(string(spType))))
 
 	var clause string
 	switch spType {
@@ -142,7 +142,7 @@ func (d MySqlDB) createSqlClause(table string, columns []*DbColumn, spType Store
 
 		clause = fmt.Sprintf(`
 INSERT INTO %s (%s) 
-VALUES(%s)`, table, strings.Join(cols, ", "), strings.Join(vals, ", "))
+VALUES(%s);`, table, strings.Join(cols, ", "), strings.Join(vals, ", "))
 
 	case StoredProcedureTypeUpdate:
 
@@ -173,7 +173,7 @@ UPDATE
 SET 
 %s 
 WHERE 
-%s`, table, strings.Join(cols, ",\n"), strings.Join(pk, "\nAND "))
+%s;`, table, strings.Join(cols, ",\n"), strings.Join(pk, "\nAND "))
 
 	case StoredProcedureTypeDelete:
 		// getting the list of columns
@@ -194,7 +194,7 @@ WHERE
 DELETE FROM 
 %s 
 WHERE 
-%s`, table, strings.Join(pk, "\nAND "))
+%s;`, table, strings.Join(pk, "\nAND "))
 	}
 
 	// adding new line symbol
@@ -218,7 +218,7 @@ func (db MySqlDB) createStoredProcedure(spType StoredProcedureTypes, table strin
 CREATE PROCEDURE usp_%s_%s (%s) 
 BEGIN
 %s
-END`+"\n", table, spType, strings.Join(params, ", "), clause)
+END;`+"\n", table, spType, strings.Join(params, ", "), clause)
 }
 
 func (db MySqlDB) getColumnName(column string) string {
